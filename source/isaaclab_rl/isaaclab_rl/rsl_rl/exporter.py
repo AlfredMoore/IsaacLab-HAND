@@ -16,7 +16,32 @@ def export_policy_as_jit(policy: object, normalizer: object | None, path: str, f
         normalizer: The empirical normalizer module. If None, Identity is used.
         path: The path to the saving directory.
         filename: The name of exported JIT file. Defaults to "policy.pt".
+
+    Dispatch:
+        If the policy defines its own ``as_jit(normalizer)`` method (e.g. a
+        vision-conditioned ``StudentTeacher`` in rsl_rl_custom that bundles
+        proprio normalizer + vision encoder + student MLP into a multi-input
+        wrapper), this method delegates to it and writes the scripted module
+        directly. The resulting policy.pt has a model-specific forward
+        signature — e.g. ``forward(proprio, vision) -> action`` — and the
+        deployment side calls it accordingly.
+
+        Otherwise (legacy ActorCritic / StudentTeacher MLP-only paths,
+        including recurrent ones), falls back to the single-input
+        ``_TorchPolicyExporter`` below, whose forward signature is
+        ``forward(obs) -> action``.
     """
+    # NEW: if the policy provides its own JIT wrapper, use it. This is the
+    # path for vision-conditioned policies; the wrapper knows its own forward
+    # signature (proprio + vision, etc.) and how to bundle the normalizer.
+    if hasattr(policy, "as_jit") and callable(getattr(policy, "as_jit")):
+        os.makedirs(path, exist_ok=True)
+        jit_model = policy.as_jit(normalizer=normalizer)
+        jit_model.to("cpu")
+        torch.jit.script(jit_model).save(os.path.join(path, filename))
+        return
+
+    # Legacy path — single-input MLP or recurrent ActorCritic / StudentTeacher.
     policy_exporter = _TorchPolicyExporter(policy, normalizer)
     policy_exporter.export(path, filename)
 
